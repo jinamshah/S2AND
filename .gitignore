@@ -134,3 +134,8 @@ foo-*
 *.dat
 *.png
 *.cpp
+
+# General MacOS
+.DS_Store
+.AppleDouble
+.LSOverride

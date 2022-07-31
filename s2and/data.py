@@ -189,8 +189,8 @@ class ANDData:
         all_test_pairs_flag: bool = False,
         random_seed: int = 1111,
         load_name_counts: Union[bool, Dict] = True,
-        n_jobs: int = 1,
-        preprocess: bool = True,
+        n_jobs: int = multiprocessing.cpu_count(),
+        preprocess: bool = False,
         name_tuples: Set[Tuple[str, str]] = None,
     ):
         if mode == "train":

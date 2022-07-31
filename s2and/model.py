@@ -26,6 +26,8 @@ from sklearn.base import clone
 from sklearn.base import TransformerMixin, BaseEstimator
 from sklearn.exceptions import EfficiencyWarning
 
+import multiprocessing
+
 logger = logging.getLogger("s2and")
 
 
@@ -78,7 +80,7 @@ class Clusterer:
         cluster_model: Optional[Any] = None,
         search_space: Optional[Dict[str, Any]] = None,
         n_iter: int = 25,
-        n_jobs: int = 16,
+        n_jobs: int = multiprocessing.cpu_count(),
         use_cache: bool = False,
         use_default_constraints_as_supervision: bool = True,
         random_state: int = 42,
@@ -771,7 +773,7 @@ class PairwiseModeler:
         search_space: Optional[Dict[str, Any]] = None,
         monotone_constraints: Optional[str] = None,
         n_iter: int = 50,
-        n_jobs: int = 16,  # for the model, not the hyperopt
+        n_jobs: int = multiprocessing.cpu_count(),  # for the model, not the hyperopt
         random_state: int = 42,
     ):
         if estimator is None:
