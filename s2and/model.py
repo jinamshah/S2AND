@@ -31,6 +31,37 @@ import multiprocessing
 logger = logging.getLogger("s2and")
 
 
+def multiproc(dict_item):
+    global personal_dataset
+    partial_supervision = {}
+    use_default_constraints_as_supervision = True
+    dont_merge_cluster_seeds = True
+    incremental_dont_use_cluster_seeds = False
+
+    # logger.info("Multi of ", dict_item[0])
+    # block_dict, signatures, dataset = dict_item[0][0], dict_item[0][1], dict_item[1]
+    block_key, signatures = dict_item[0], dict_item[1]
+    temp_data = []
+    for i, j in zip(*np.triu_indices(len(signatures), k=1)):
+        # subtracting LARGE_INTEGER so many_pairs_featurize knows not to make features
+        label = np.nan
+        if (signatures[i], signatures[j]) in partial_supervision:
+            label = partial_supervision[(signatures[i], signatures[j])] - LARGE_INTEGER
+        elif (signatures[j], signatures[i]) in partial_supervision:
+            label = partial_supervision[(signatures[j], signatures[i])] - LARGE_INTEGER
+        elif use_default_constraints_as_supervision:
+            value = personal_dataset.get_constraint(
+                signatures[i],
+                signatures[j],
+                dont_merge_cluster_seeds=dont_merge_cluster_seeds,
+                incremental_dont_use_cluster_seeds=incremental_dont_use_cluster_seeds,
+            )
+            if value is not None:
+                label = value - LARGE_INTEGER
+
+        temp_data.append(((signatures[i], signatures[j], label), (i, j), block_key))
+    return temp_data
+
 class Clusterer:
     """
     A wrapper for learning a clusterer
@@ -88,6 +119,7 @@ class Clusterer:
         nameless_featurizer_info: Optional[FeaturizationInfo] = None,
         dont_merge_cluster_seeds: bool = True,
         batch_size: int = 1000000,
+        # batch_size: int = 10000,
     ):
         self.featurizer_info = featurizer_info
         self.nameless_featurizer_info = nameless_featurizer_info
@@ -143,51 +175,6 @@ class Clusterer:
                     return out_dict
         return out_dict
 
-    def distance_matrix_helper(
-        self,
-        block_dict: Dict,
-        dataset: ANDData,
-        partial_supervision: Dict[Tuple[str, str], Union[int, float]],
-        incremental_dont_use_cluster_seeds: bool = False,
-    ):
-        """
-        Helper generator function to yield one pair for batch featurization on the fly
-
-        Parameters
-        ----------
-        block_dict: Dict
-            the block dictionary
-        dataset: ANDData
-            the dataset
-        partial_supervision: Dict
-            the dictionary of partial supervision provided with this dataset/these blocks
-        incremental_dont_use_cluster_seeds: bool
-            Are we clustering in incremental mode? If so, don't use the cluster seeds that came with the dataset
-
-        Returns
-        -------
-        yields pairs of ((sig id 1, sig id 2, label), index pair into the distance matrix, block key)
-        """
-        for block_key, signatures in block_dict.items():
-            for i, j in zip(*np.triu_indices(len(signatures), k=1)):
-                # subtracting LARGE_INTEGER so many_pairs_featurize knows not to make features
-                label = np.nan
-                if (signatures[i], signatures[j]) in partial_supervision:
-                    label = partial_supervision[(signatures[i], signatures[j])] - LARGE_INTEGER
-                elif (signatures[j], signatures[i]) in partial_supervision:
-                    label = partial_supervision[(signatures[j], signatures[i])] - LARGE_INTEGER
-                elif self.use_default_constraints_as_supervision:
-                    value = dataset.get_constraint(
-                        signatures[i],
-                        signatures[j],
-                        dont_merge_cluster_seeds=self.dont_merge_cluster_seeds,
-                        incremental_dont_use_cluster_seeds=incremental_dont_use_cluster_seeds,
-                    )
-                    if value is not None:
-                        label = value - LARGE_INTEGER
-
-                yield ((signatures[i], signatures[j], label), (i, j), block_key)
-
     def make_distance_matrices(
         self,
         block_dict: Dict[str, List[str]],
@@ -218,6 +205,7 @@ class Clusterer:
         -------
         Dict: the distance matrix dictionary, keyed by block key
         """
+
         logger.info(f"Making {len(block_dict)} distance matrices")
         logger.info("Initializing pairwise_probas")
         # initialize pairwise_probas with correctly size arrays
@@ -236,16 +224,32 @@ class Clusterer:
         logger.info("Pairwise probas initialized, starting making all pairs")
 
         # featurize and predict in batches
-        helper_output = self.distance_matrix_helper(
-            block_dict,
-            dataset,
-            partial_supervision,
-            incremental_dont_use_cluster_seeds=incremental_dont_use_cluster_seeds,
-        )
+        
+        # copy the anddata to a global variable
+        global personal_dataset
+        personal_dataset = dataset
+
+        # define the multiprocessing part
+        p = multiprocessing.Pool(processes= int(multiprocessing.cpu_count()/2))
+        data = p.map(multiproc, [dict_item for dict_item in block_dict.items()])
+        p.close()
+        helper_output = []
+        # iterate over the data and populate the answer that the helper function would otherwise give
+        for item in data:
+            if len(item) > 0:
+                for x in item:
+                # logger.info(item)
+                    helper_output.append(x)
+        # helper_output = np.concatenate(data, axis=0)
+
+        # copying helper_output to a new variable due to the way the loop is written (while True instead of for on batch size)
+        temp_op = helper_output
 
         prev_block_key = ""
         batch_num = 0
         num_batches = math.ceil(num_pairs / self.batch_size)
+        logger.info(f"Details: {num_batches} batches, {num_pairs} pairs, {len(helper_output)} op len")
+
         while True:
             logger.info(f"Featurizing batch {batch_num}/{num_batches}")
             count = 0
@@ -254,14 +258,16 @@ class Clusterer:
             blocks = []
             logger.info("Getting constraints")
             # iterate over a batch_size number of pairs
-            for item in helper_output:
+            for item in temp_op:
                 pairs.append(item[0])
                 indices.append(item[1])
                 blocks.append(item[2])
                 count += 1
                 if count == self.batch_size:
                     break
-
+            temp_op = temp_op[self.batch_size+1:]
+            logger.info(f"new size {len(temp_op)}")
+            # logger.info("new size: ", len(temp_op))
             if len(pairs) == 0:
                 break
 
